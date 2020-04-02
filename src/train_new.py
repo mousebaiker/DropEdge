@@ -1,6 +1,10 @@
 from __future__ import division
 from __future__ import print_function
 
+import os
+
+import ipdb
+
 import time
 import argparse
 import numpy as np
@@ -16,15 +20,12 @@ from metric import accuracy, roc_auc_compute_fn
 # from deepgcn.utils import load_data, accuracy
 # from deepgcn.models import GCN
 
-from metric import accuracy
 from utils import load_citation, load_reddit_data
 from models import *
-from earlystopping import EarlyStopping
-from sample import Sampler
 
 # Training settings
 parser = argparse.ArgumentParser()
-# Training parameter 
+# Training parameter
 parser.add_argument('--no_cuda', action='store_true', default=False,
                     help='Disables CUDA training.')
 parser.add_argument('--fastmode', action='store_true', default=False,
@@ -71,12 +72,13 @@ parser.add_argument("--normalization", default="AugNormAdj",
                     help="The normalization on the adj matrix.")
 parser.add_argument("--sampling_percent", type=float, default=1.0,
                     help="The percent of the preserve edges. If it equals 1, no sampling is done on adj matrix.")
-# parser.add_argument("--baseblock", default="res", help="The base building block (resgcn, densegcn, mutigcn, inceptiongcn).")
+parser.add_argument("--baseblock", default="res", help="The base building block (resgcn, densegcn, mutigcn, inceptiongcn).")
 parser.add_argument("--nbaseblocklayer", type=int, default=1,
                     help="The number of layers in each baseblock")
 parser.add_argument("--aggrmethod", default="default",
                     help="The aggrmethod for the layer aggreation. The options includes add and concat. Only valid in resgcn, densegcn and inecptiongcn")
 parser.add_argument("--task_type", default="full", help="The node classification task type (full and semi). Only valid for cora, citeseer and pubmed dataset.")
+parser.add_argument("--init_func", default="", help="Initialization function from torch.nn.init. By default, scaled uniform is used.")
 
 args = parser.parse_args()
 if args.debug:
@@ -96,6 +98,10 @@ if args.type == "mutigcn":
     print("For the multi-layer gcn model, the aggrmethod is fixed to nores and nhiddenlayers = 1.")
     args.nhiddenlayer = 1
     args.aggrmethod = "nores"
+
+init_func = None
+if args.init_func:
+  init_func = getattr(torch.nn.init, args.init_func)
 
 # random seed setting
 np.random.seed(args.seed)
@@ -126,8 +132,8 @@ model = GCNModel(nfeat=nfeat,
                  withbn=args.withbn,
                  withloop=args.withloop,
                  aggrmethod=args.aggrmethod,
-                 mixmode=args.mixmode)
-
+                 mixmode=args.mixmode,
+                 init_func=init_func)
 optimizer = optim.Adam(model.parameters(),
                        lr=args.lr, weight_decay=args.weight_decay)
 
@@ -137,7 +143,7 @@ scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[200, 300, 400,
 if args.cuda:
     model.cuda()
 
-# For the mix mode, lables and indexes are in cuda. 
+# For the mix mode, lables and indexes are in cuda.
 if args.cuda or args.mixmode:
     labels = labels.cuda()
     idx_train = idx_train.cuda()
@@ -189,6 +195,12 @@ def train(epoch, train_adj, train_fea, idx_train, val_adj=None, val_fea=None):
     # We can not apply the fastmode for the reddit dataset.
     # if sampler.learning_type == "inductive" or not args.fastmode:
 
+    grads = [np.linalg.norm(l.grad.cpu().numpy()) for l in model.midlayer[0].model.weights]
+    norms = [np.linalg.norm(l.detach().cpu().numpy()) for l in model.midlayer[0].model.weights]
+    # print("Grads:", grads)
+    # print("Norms", norms)
+    # print(np.array(norms)/np.array(grads))
+
     if args.early_stopping > 0 and sampler.dataset != "reddit":
         loss_val = F.nll_loss(output[idx_val], labels[idx_val]).item()
         early_stopping(loss_val, model)
@@ -210,7 +222,7 @@ def train(epoch, train_adj, train_fea, idx_train, val_adj=None, val_fea=None):
         scheduler.step()
 
     val_t = time.time() - val_t
-    return (loss_train.item(), acc_train.item(), loss_val, acc_val, get_lr(optimizer), train_t, val_t)
+    return (loss_train.item(), acc_train.item(), loss_val, acc_val, get_lr(optimizer), train_t, val_t, grads, norms)
 
 
 def test(test_adj, test_fea):
@@ -234,6 +246,9 @@ loss_train = np.zeros((args.epochs,))
 acc_train = np.zeros((args.epochs,))
 loss_val = np.zeros((args.epochs,))
 acc_val = np.zeros((args.epochs,))
+print(args.nbaseblocklayer)
+grads = np.zeros((args.epochs, args.nbaseblocklayer))
+norms = np.zeros((args.epochs, args.nbaseblocklayer))
 
 sampling_t = 0
 
@@ -248,7 +263,7 @@ for epoch in range(args.epochs):
         train_adj = train_adj.cuda()
 
     sampling_t = time.time() - sampling_t
-    
+
     # The validation set is controlled by idx_val
     # if sampler.learning_type == "transductive":
     if False:
@@ -269,21 +284,29 @@ for epoch in range(args.epochs):
               's_time: {:.4f}s'.format(sampling_t),
               't_time: {:.4f}s'.format(outputs[5]),
               'v_time: {:.4f}s'.format(outputs[6]))
-    
+
     if args.no_tensorboard is False:
         tb_writer.add_scalars('Loss', {'train': outputs[0], 'val': outputs[2]}, epoch)
         tb_writer.add_scalars('Accuracy', {'train': outputs[1], 'val': outputs[3]}, epoch)
         tb_writer.add_scalar('lr', outputs[4], epoch)
         tb_writer.add_scalars('Time', {'train': outputs[5], 'val': outputs[6]}, epoch)
-        
+        norms_dict = dict()
+        grads_dict = dict()
+        for i in range(np.asarray(outputs[7]).shape[0]):
+            norms_dict[str(i)] = outputs[8][i]
+            grads_dict[str(i)] = outputs[7][i]
+        tb_writer.add_scalars('Grads', grads_dict, epoch)
+        tb_writer.add_scalars('Norms', norms_dict, epoch)
+        norms_dict.clear()
+        grads_dict.clear()
 
-    loss_train[epoch], acc_train[epoch], loss_val[epoch], acc_val[epoch] = outputs[0], outputs[1], outputs[2], outputs[
-        3]
+    loss_train[epoch], acc_train[epoch], loss_val[epoch], acc_val[epoch], grads[epoch,:], norms[epoch,:] = outputs[0], outputs[1], outputs[2], outputs[3], outputs[7], outputs[8]
 
     if args.early_stopping > 0 and early_stopping.early_stop:
         print("Early stopping.")
         model.load_state_dict(early_stopping.load_checkpoint())
         break
+
 
 if args.early_stopping > 0:
     model.load_state_dict(early_stopping.load_checkpoint())
@@ -299,3 +322,13 @@ if args.mixmode:
 (loss_test, acc_test) = test(test_adj, test_fea)
 print("%.6f\t%.6f\t%.6f\t%.6f\t%.6f\t%.6f" % (
 loss_train[-1], loss_val[-1], loss_test, acc_train[-1], acc_val[-1], acc_test))
+
+loss_folder = os.path.join('losses', early_stopping.fname)
+os.makedirs(loss_folder, exist_ok=True)
+
+np.save(os.path.join(loss_folder, 'loss_train.np'), loss_train)
+np.save(os.path.join(loss_folder, 'loss_val.np'), loss_val)
+np.save(os.path.join(loss_folder, 'acc_train.np'), acc_train)
+np.save(os.path.join(loss_folder, 'acc_val.np'), acc_val)
+np.save(os.path.join(loss_folder, 'weight_norms.np'), grads)
+np.save(os.path.join(loss_folder, 'grad_norms.np'), norms)

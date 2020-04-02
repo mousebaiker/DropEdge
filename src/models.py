@@ -33,7 +33,8 @@ class GCNModel(nn.Module):
                  withbn=True,
                  withloop=True,
                  aggrmethod="add",
-                 mixmode=False):
+                 mixmode=False,
+                 init_func=None):
         """
         Initial function.
         :param nfeat: the input feature dimension.
@@ -51,6 +52,8 @@ class GCNModel(nn.Module):
         :param aggrmethod: the aggregation function for baseblock, can be "concat" and "add". For "resgcn", the default
                            is "add", for others the default is "concat".
         :param mixmode: enable cpu-gpu mix mode. If true, put the inputlayer to cpu.
+        :param init_func: initialization function from torch.nn.init. If None,
+                          scaled uniform is used.
         """
         super(GCNModel, self).__init__()
         self.mixmode = mixmode
@@ -68,7 +71,7 @@ class GCNModel(nn.Module):
             raise NotImplementedError("Current baseblock %s is not supported." % (baseblock))
         if inputlayer == "gcn":
             # input gc
-            self.ingc = GraphConvolutionBS(nfeat, nhid, activation, withbn, withloop)
+            self.ingc = GraphConvolutionBS(nfeat, nhid, activation, withbn, withloop, init_func=init_func)
             baseblockinput = nhid
         elif inputlayer == "none":
             self.ingc = lambda x: x
@@ -79,9 +82,9 @@ class GCNModel(nn.Module):
 
         outactivation = lambda x: x
         if outputlayer == "gcn":
-            self.outgc = GraphConvolutionBS(baseblockinput, nclass, outactivation, withbn, withloop)
+            self.outgc = GraphConvolutionBS(baseblockinput, nclass, outactivation, withbn, withloop, init_func=init_func)
         # elif outputlayer ==  "none": #here can not be none
-        #    self.outgc = lambda x: x 
+        #    self.outgc = lambda x: x
         else:
             self.outgc = Dense(nhid, nclass, activation)
 
@@ -98,12 +101,13 @@ class GCNModel(nn.Module):
                                  activation=activation,
                                  dropout=dropout,
                                  dense=False,
-                                 aggrmethod=aggrmethod)
+                                 aggrmethod=aggrmethod,
+                                 init_func=init_func)
             self.midlayer.append(gcb)
             baseblockinput = gcb.get_outdim()
         # output gc
         outactivation = lambda x: x  # we donot need nonlinear activation here.
-        self.outgc = GraphConvolutionBS(baseblockinput, nclass, outactivation, withbn, withloop)
+        self.outgc = GraphConvolutionBS(baseblockinput, nclass, outactivation, withbn, withloop, init_func=init_func)
 
         self.reset_parameters()
         if mixmode:
@@ -161,5 +165,3 @@ class GCNFlatRes(nn.Module):
         x = self.reslayer(x, adj)
         # x = F.dropout(x, self.dropout, training=self.training)
         return F.log_softmax(x, dim=1)
-
-

@@ -15,7 +15,7 @@ class GraphConvolutionBS(Module):
     """
 
     def __init__(self, in_features, out_features, activation=lambda x: x, withbn=True, withloop=True, bias=True,
-                 res=False):
+                 res=False, init_func=None):
         """
         Initial function.
         :param in_features: the input feature dimension.
@@ -25,12 +25,15 @@ class GraphConvolutionBS(Module):
         :param withloop: using self feature modeling.
         :param bias: enable bias.
         :param res: enable res connections.
+        :param init_func: initialization function from torch.nn.init. If None,
+                          scaled uniform is used.
         """
         super(GraphConvolutionBS, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.sigma = activation
         self.res = res
+        self.init_func = init_func
 
         # Parameter setting.
         self.weight = Parameter(torch.FloatTensor(in_features, out_features))
@@ -53,6 +56,7 @@ class GraphConvolutionBS(Module):
         self.reset_parameters()
 
     def reset_parameters(self):
+      if self.init_func is None:
         stdv = 1. / math.sqrt(self.weight.size(1))
         self.weight.data.uniform_(-stdv, stdv)
         if self.self_weight is not None:
@@ -60,6 +64,13 @@ class GraphConvolutionBS(Module):
             self.self_weight.data.uniform_(-stdv, stdv)
         if self.bias is not None:
             self.bias.data.uniform_(-stdv, stdv)
+      else:
+        self.init_func(self.weight)
+        if self.self_weight is not None:
+          self.init_func(self.self_weight)
+        if self.bias is not None:
+          stdv = 1. / math.sqrt(self.weight.size(1))
+          self.bias.data.uniform_(-stdv, stdv)
 
     def forward(self, input, adj):
         support = torch.mm(input, self.weight)
@@ -87,12 +98,12 @@ class GraphConvolutionBS(Module):
 
 class GraphBaseBlock(Module):
     """
-    The base block for Multi-layer GCN / ResGCN / Dense GCN 
+    The base block for Multi-layer GCN / ResGCN / Dense GCN
     """
 
     def __init__(self, in_features, out_features, nbaselayer,
                  withbn=True, withloop=True, activation=F.relu, dropout=True,
-                 aggrmethod="concat", dense=False):
+                 aggrmethod="concat", dense=False, init_func=None):
         """
         The base block for constructing DeepGCN model.
         :param in_features: the input feature dimension.
@@ -105,12 +116,15 @@ class GraphBaseBlock(Module):
         :param aggrmethod: the aggregation function for baseblock, can be "concat" and "add". For "resgcn", the default
                            is "add", for others the default is "concat".
         :param dense: enable dense connection
+        :param init_func: initialization function from torch.nn.init. If None,
+                          scaled uniform is used.
         """
         super(GraphBaseBlock, self).__init__()
         self.in_features = in_features
         self.hiddendim = out_features
         self.nhiddenlayer = nbaselayer
         self.activation = activation
+        self.init_func = init_func
         self.aggrmethod = aggrmethod
         self.dense = dense
         self.dropout = dropout
@@ -118,6 +132,19 @@ class GraphBaseBlock(Module):
         self.withloop = withloop
         self.hiddenlayers = nn.ModuleList()
         self.__makehidden()
+
+
+        self.weights = [layer.weight for layer in self.hiddenlayers]
+        for weight in self.weights:
+          weight.retain_grad()
+          print('Weight:', weight)
+
+        self.self_weights = []
+        if self.withloop is not None:
+          for layer in self.hiddenlayers:
+            self.self_weights.append(layer.self_weight)
+            layer.self_weight.retain_grad()
+
 
         if self.aggrmethod == "concat" and dense == False:
             self.out_features = in_features + out_features
@@ -137,9 +164,11 @@ class GraphBaseBlock(Module):
         for i in range(self.nhiddenlayer):
             if i == 0:
                 layer = GraphConvolutionBS(self.in_features, self.hiddendim, self.activation, self.withbn,
-                                           self.withloop)
+                                           self.withloop, res=False, init_func=self.init_func)
             else:
-                layer = GraphConvolutionBS(self.hiddendim, self.hiddendim, self.activation, self.withbn, self.withloop)
+                layer = GraphConvolutionBS(self.hiddendim, self.hiddendim,
+                    self.activation, self.withbn, self.withloop, res=False,
+                    init_func=self.init_func)
             self.hiddenlayers.append(layer)
 
     def _doconcat(self, x, subx):
@@ -184,7 +213,7 @@ class MultiLayerGCNBlock(Module):
 
     def __init__(self, in_features, out_features, nbaselayer,
                  withbn=True, withloop=True, activation=F.relu, dropout=True,
-                 aggrmethod=None, dense=None):
+                 aggrmethod=None, dense=None, init_func=None):
         """
         The multiple layer GCN block.
         :param in_features: the input feature dimension.
@@ -206,7 +235,8 @@ class MultiLayerGCNBlock(Module):
                                     activation=activation,
                                     dropout=dropout,
                                     dense=False,
-                                    aggrmethod="nores")
+                                    aggrmethod="nores",
+                                    init_func=init_func)
 
     def forward(self, input, adj):
         return self.model.forward(input, adj)
