@@ -23,6 +23,8 @@ from metric import accuracy, roc_auc_compute_fn
 from utils import load_citation, load_reddit_data
 from models import *
 
+np.seterr('ignore')
+
 # Training settings
 parser = argparse.ArgumentParser()
 # Training parameter
@@ -79,6 +81,7 @@ parser.add_argument("--aggrmethod", default="default",
                     help="The aggrmethod for the layer aggreation. The options includes add and concat. Only valid in resgcn, densegcn and inecptiongcn")
 parser.add_argument("--task_type", default="full", help="The node classification task type (full and semi). Only valid for cora, citeseer and pubmed dataset.")
 parser.add_argument("--init_func", default="", help="Initialization function from torch.nn.init. By default, scaled uniform is used.")
+parser.add_argument("--experiment_name", default="", help="Name of the experiment. Used to create directories with results of experiments.")
 
 args = parser.parse_args()
 if args.debug:
@@ -161,9 +164,13 @@ if args.early_stopping > 0:
     print("Model is saving to: %s" % (early_stopping.fname))
 
 if args.no_tensorboard is False:
-    tb_writer = SummaryWriter(
-        comment=f"-dataset_{args.dataset}-type_{args.type}"
-    )
+  logdir = None
+  if args.experiment_name:
+    logdir = f'runs/{args.experiment_name}-layers_{args.nbaseblocklayer}-seed_{args.seed}'
+  tb_writer = SummaryWriter(
+      logdir=logdir,
+      comment=f"-dataset_{args.dataset}-type_{args.type}"
+  )
 
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:
@@ -323,12 +330,18 @@ if args.mixmode:
 print("%.6f\t%.6f\t%.6f\t%.6f\t%.6f\t%.6f" % (
 loss_train[-1], loss_val[-1], loss_test, acc_train[-1], acc_val[-1], acc_test))
 
+
 loss_folder = os.path.join('losses', early_stopping.fname)
+if args.experiment_name:
+  loss_folder = os.path.join('losses', args.experiment_name, f'layers_{args.nbaseblocklayer}-seed_{args.seed}')
+
 os.makedirs(loss_folder, exist_ok=True)
 
-np.save(os.path.join(loss_folder, 'loss_train.np'), loss_train)
-np.save(os.path.join(loss_folder, 'loss_val.np'), loss_val)
-np.save(os.path.join(loss_folder, 'acc_train.np'), acc_train)
-np.save(os.path.join(loss_folder, 'acc_val.np'), acc_val)
-np.save(os.path.join(loss_folder, 'weight_norms.np'), grads)
-np.save(os.path.join(loss_folder, 'grad_norms.np'), norms)
+np.save(os.path.join(loss_folder, 'loss_train'), loss_train)
+np.save(os.path.join(loss_folder, 'loss_test'), loss_test)
+np.save(os.path.join(loss_folder, 'loss_val'), loss_val)
+np.save(os.path.join(loss_folder, 'acc_train'), acc_train)
+np.save(os.path.join(loss_folder, 'acc_val'), acc_val)
+np.save(os.path.join(loss_folder, 'weight_norms'), grads)
+np.save(os.path.join(loss_folder, 'grad_norms'), norms)
+np.save(os.path.join(loss_folder, 'acc_test'), acc_test)

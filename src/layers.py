@@ -137,13 +137,13 @@ class GraphBaseBlock(Module):
         self.weights = [layer.weight for layer in self.hiddenlayers]
         for weight in self.weights:
           weight.retain_grad()
-          print('Weight:', weight)
 
         self.self_weights = []
         if self.withloop is not None:
           for layer in self.hiddenlayers:
-            self.self_weights.append(layer.self_weight)
-            layer.self_weight.retain_grad()
+            if layer.self_weight is not None:
+              self.self_weights.append(layer.self_weight)
+              layer.self_weight.retain_grad()
 
 
         if self.aggrmethod == "concat" and dense == False:
