@@ -81,6 +81,7 @@ parser.add_argument("--aggrmethod", default="default",
                     help="The aggrmethod for the layer aggreation. The options includes add and concat. Only valid in resgcn, densegcn and inecptiongcn")
 parser.add_argument("--task_type", default="full", help="The node classification task type (full and semi). Only valid for cora, citeseer and pubmed dataset.")
 parser.add_argument("--init_func", default="", help="Initialization function from torch.nn.init. By default, scaled uniform is used.")
+parser.add_argument("--skip_connections", action='store_true', default=False, help="Enable skip connections via concatenations.")
 parser.add_argument("--experiment_name", default="", help="Name of the experiment. Used to create directories with results of experiments.")
 
 args = parser.parse_args()
@@ -122,21 +123,40 @@ nclass = sampler.nclass
 print("nclass: %d\tnfea:%d" % (nclass, nfeat))
 
 # The model
-model = GCNModel(nfeat=nfeat,
-                 nhid=args.hidden,
-                 nclass=nclass,
-                 nhidlayer=args.nhiddenlayer,
-                 dropout=args.dropout,
-                 baseblock=args.type,
-                 inputlayer=args.inputlayer,
-                 outputlayer=args.outputlayer,
-                 nbaselayer=args.nbaseblocklayer,
-                 activation=F.relu,
-                 withbn=args.withbn,
-                 withloop=args.withloop,
-                 aggrmethod=args.aggrmethod,
-                 mixmode=args.mixmode,
-                 init_func=init_func)
+model = None
+if args.skip_connections:
+  model = SkipGCN(nfeat=nfeat,
+                   nhid=args.hidden,
+                   nclass=nclass,
+                   nhidlayer=args.nhiddenlayer,
+                   dropout=args.dropout,
+                   baseblock=args.type,
+                   inputlayer=args.inputlayer,
+                   outputlayer=args.outputlayer,
+                   nbaselayer=args.nbaseblocklayer,
+                   activation=F.relu,
+                   withbn=args.withbn,
+                   withloop=args.withloop,
+                   aggrmethod=args.aggrmethod,
+                   mixmode=args.mixmode,
+                   init_func=init_func)
+else:
+  model = GCNModel(nfeat=nfeat,
+                   nhid=args.hidden,
+                   nclass=nclass,
+                   nhidlayer=args.nhiddenlayer,
+                   dropout=args.dropout,
+                   baseblock=args.type,
+                   inputlayer=args.inputlayer,
+                   outputlayer=args.outputlayer,
+                   nbaselayer=args.nbaseblocklayer,
+                   activation=F.relu,
+                   withbn=args.withbn,
+                   withloop=args.withloop,
+                   aggrmethod=args.aggrmethod,
+                   mixmode=args.mixmode,
+                   init_func=init_func)
+
 optimizer = optim.Adam(model.parameters(),
                        lr=args.lr, weight_decay=args.weight_decay)
 

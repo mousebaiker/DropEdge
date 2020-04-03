@@ -103,7 +103,7 @@ class GraphBaseBlock(Module):
 
     def __init__(self, in_features, out_features, nbaselayer,
                  withbn=True, withloop=True, activation=F.relu, dropout=True,
-                 aggrmethod="concat", dense=False, init_func=None):
+                 aggrmethod="concat", dense=False, init_func=None, skip_connections=False):
         """
         The base block for constructing DeepGCN model.
         :param in_features: the input feature dimension.
@@ -118,6 +118,7 @@ class GraphBaseBlock(Module):
         :param dense: enable dense connection
         :param init_func: initialization function from torch.nn.init. If None,
                           scaled uniform is used.
+        :param skip_connections: using skip connections via concatenation.
         """
         super(GraphBaseBlock, self).__init__()
         self.in_features = in_features
@@ -131,6 +132,7 @@ class GraphBaseBlock(Module):
         self.withbn = withbn
         self.withloop = withloop
         self.hiddenlayers = nn.ModuleList()
+        self.skip_connections = skip_connections
         self.__makehidden()
 
 
@@ -184,15 +186,23 @@ class GraphBaseBlock(Module):
     def forward(self, input, adj):
         x = input
         denseout = None
+        outputs = []
         # Here out is the result in all levels.
         for gc in self.hiddenlayers:
             denseout = self._doconcat(denseout, x)
             x = gc(x, adj)
             x = F.dropout(x, self.dropout, training=self.training)
+            outputs.append(x) # added accumulation of layer outputs
 
-        if not self.dense:
+        if self.skip_connections:
+          if not self.dense:
+              return self._doconcat(x, input), outputs
+          return self._doconcat(x, denseout), outputs ##added outputs
+        else:
+          if not self.dense:
             return self._doconcat(x, input)
-        return self._doconcat(x, denseout)
+          return self._doconcat(x, denseout)
+
 
     def get_outdim(self):
         return self.out_features
@@ -213,7 +223,7 @@ class MultiLayerGCNBlock(Module):
 
     def __init__(self, in_features, out_features, nbaselayer,
                  withbn=True, withloop=True, activation=F.relu, dropout=True,
-                 aggrmethod=None, dense=None, init_func=None):
+                 aggrmethod=None, dense=None, init_func=None, skip_connections=False):
         """
         The multiple layer GCN block.
         :param in_features: the input feature dimension.
@@ -225,6 +235,7 @@ class MultiLayerGCNBlock(Module):
         :param dropout: the dropout ratio.
         :param aggrmethod: not applied.
         :param dense: not applied.
+        :param skip_connections: Enable skip connections via concatenation.
         """
         super(MultiLayerGCNBlock, self).__init__()
         self.model = GraphBaseBlock(in_features=in_features,
@@ -236,7 +247,8 @@ class MultiLayerGCNBlock(Module):
                                     dropout=dropout,
                                     dense=False,
                                     aggrmethod="nores",
-                                    init_func=init_func)
+                                    init_func=init_func,
+                                    skip_connections=skip_connections)
 
     def forward(self, input, adj):
         return self.model.forward(input, adj)

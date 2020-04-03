@@ -165,3 +165,152 @@ class GCNFlatRes(nn.Module):
         x = self.reslayer(x, adj)
         # x = F.dropout(x, self.dropout, training=self.training)
         return F.log_softmax(x, dim=1)
+
+
+class SkipGCN(nn.Module):
+    """
+       The model for the single kind of deepgcn blocks.
+
+       The model architecture likes:
+       inputlayer(nfeat)--block(nbaselayer, nhid)--...--outputlayer(nclass)--softmax(nclass)
+                           |------  nhidlayer  ----|
+       The total layer is nhidlayer*nbaselayer + 2.
+       All options are configurable.
+    """
+
+    def __init__(self,
+                 nfeat,
+                 nhid,
+                 nclass,
+                 nhidlayer,
+                 dropout,
+                 baseblock="mutigcn",
+                 inputlayer="gcn",
+                 outputlayer="gcn",
+                 nbaselayer=0,
+                 activation=lambda x: x,
+                 withbn=True,
+                 withloop=True,
+                 aggrmethod="add",
+                 mixmode=False,
+                 init_func=None):
+        """
+        Initial function.
+        :param nfeat: the input feature dimension.
+        :param nhid:  the hidden feature dimension.
+        :param nclass: the output feature dimension.
+        :param nhidlayer: the number of hidden blocks.
+        :param dropout:  the dropout ratio.
+        :param baseblock: the baseblock type, can be "mutigcn", "resgcn", "densegcn" and "inceptiongcn".
+        :param inputlayer: the input layer type, can be "gcn", "dense", "none".
+        :param outputlayer: the input layer type, can be "gcn", "dense".
+        :param nbaselayer: the number of layers in one hidden block.
+        :param activation: the activation function, default is ReLu.
+        :param withbn: using batch normalization in graph convolution.
+        :param withloop: using self feature modeling in graph convolution.
+        :param aggrmethod: the aggregation function for baseblock, can be "concat" and "add". For "resgcn", the default
+                           is "add", for others the default is "concat".
+        :param mixmode: enable cpu-gpu mix mode. If true, put the inputlayer to cpu.
+        :param init_func: initialization function from torch.nn.init. If None,
+                          scaled uniform is used.
+        """
+        super(SkipGCN, self).__init__()
+        self.mixmode = mixmode
+        self.dropout = dropout
+
+        if baseblock == "resgcn":
+            self.BASEBLOCK = ResGCNBlock
+        elif baseblock == "densegcn":
+            self.BASEBLOCK = DenseGCNBlock
+        elif baseblock == "mutigcn":
+            self.BASEBLOCK = MultiLayerGCNBlock
+        elif baseblock == "inceptiongcn":
+            self.BASEBLOCK = InecptionGCNBlock
+        else:
+            raise NotImplementedError("Current baseblock %s is not supported." % (baseblock))
+        if inputlayer == "gcn":
+            # input gc
+            print(nfeat)
+            print(nhid)
+            self.ingc = GraphConvolutionBS(nfeat, nhid, activation, withbn, withloop, init_func=init_func)
+            baseblockinput = nhid
+        elif inputlayer == "none":
+            self.ingc = lambda x: x
+            baseblockinput = nfeat
+        else:
+            self.ingc = Dense(nfeat, nhid, activation)
+            baseblockinput = nhid
+
+        outactivation = lambda x: x
+        if outputlayer == "gcn":
+            self.outgc = GraphConvolutionBS(baseblockinput*nclass, nclass, outactivation, withbn, withloop, init_func=init_func) # added baseblockinput*nclass
+        # elif outputlayer ==  "none": #here can not be none
+        #    self.outgc = lambda x: x
+        else:
+            self.outgc = Dense(nhid, nclass, activation)
+
+        # hidden layer
+        self.midlayer = nn.ModuleList()
+        # Dense is not supported now.
+        # for i in xrange(nhidlayer):
+        for i in range(nhidlayer):
+            gcb = self.BASEBLOCK(in_features=baseblockinput,
+                                 out_features=nhid,
+                                 nbaselayer=nbaselayer,
+                                 withbn=withbn,
+                                 withloop=withloop,
+                                 activation=activation,
+                                 dropout=dropout,
+                                 dense=False,
+                                 aggrmethod=aggrmethod,
+                                 init_func=init_func,
+                                 skip_connections=True)
+            self.midlayer.append(gcb)
+            baseblockinput = gcb.get_outdim()
+        # output gc
+        outactivation = lambda x: x  # we donot need nonlinear activation here.
+        #self.outgc = GraphConvolutionBS(baseblockinput*nclass, nclass, outactivation, withbn, withloop)
+        out_1 = nn.Linear(baseblockinput*nbaselayer, 128)
+        out_2 = nn.ReLU()
+        out_3 = nn.Linear(128, nclass)
+        self.outgc = nn.Sequential(out_1, out_2, out_3)
+
+        self.reset_parameters()
+        if mixmode:
+            self.midlayer = self.midlayer.to(device)
+            self.outgc = self.outgc.to(device)
+
+    def reset_parameters(self):
+        pass
+
+    def forward(self, fea, adj):
+            # input
+            if self.mixmode:
+                x = self.ingc(fea, adj.cpu())
+            else:
+                x = self.ingc(fea, adj)
+
+            x = F.dropout(x, self.dropout, training=self.training)
+            if self.mixmode:
+                x = x.to(device)
+
+            # mid block connections
+            layers_outputs=[]
+            for i in range(len(self.midlayer)):
+                midgc = self.midlayer[i]
+                x, layers_outputs = midgc(x, adj)
+
+            # output, no relu and dropput here.
+            print('len of layers_outputs \n')
+            print(len(layers_outputs))
+            print()
+            # for i in range(len(self.midlayer)+1):
+            #     x = torch.cat((x, layers_outputs[i]), 1)
+            x = torch.cat(layers_outputs, 1)
+            print('shape of X \n')
+            print(x.shape)
+            print()
+            #x = self.outgc(x, adj)
+            x = self.outgc(x)
+            x = F.log_softmax(x, dim=1)
+            return x
